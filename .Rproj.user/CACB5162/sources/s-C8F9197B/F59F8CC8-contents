@@ -1,0 +1,462 @@
+---
+title: "Treatment Assignment"
+author: ""
+date: ""
+output: pdf_document
+classoption: portrait
+geometry: margin=1in
+---
+    
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(dev = 'png')
+knitr::opts_chunk$set(fig.width=9, fig.height=6.5)
+rm(list=ls())
+library(dplyr)
+library(magrittr)
+library(data.table)
+library(ggplot2)
+data_dir <- '/users/ryansun/desktop/test'
+```
+
+```{r, calc_imbalance, eval=TRUE, results='hide', cache=TRUE, warning=FALSE}
+
+#' Function to calculate the measure of (im)balance for one factor
+#' @param strata_trt_vec Vector containing the treatment assignment of each patient
+#' in this particular strata
+#' @param num_trts Total number of treatments
+#' @param imb_fn Imbalance function, either "range" or "diff" or "var"
+#' @param pot_trt The potential treatment assigned to this patient
+#'
+#' @return Numeric measure of imbalance
+#' @export
+#'
+#' @examples
+#' calc_imbalance(strata_trt_vec=c(1,2,1), num_trts=2, imb_fn="range", pot_trt=1)
+calc_imbalance <- function(strata_trt_vec, num_trts, imb_fn, pot_trt) {
+    # if nothing yet in this strata
+    if (length(strata_trt_vec) == 0) {
+        if (imb_fn == 'range' | imb_fn == "diff") {return(1)}
+        if (imb_fn == "var") {return(0)}
+    }
+    
+    # append the potentital treatment value
+    strata_trt_vec <- c(strata_trt_vec, pot_trt)
+    
+    # range
+    if (imb_fn == 'range') {
+        # sometimes haven't seen all the treatments yet
+        if (length(unique(strata_trt_vec)) != num_trts) {
+            temp_d <- max(table(strata_trt_vec)) 
+        } else {
+            temp_d <- max(table(strata_trt_vec)) - min(table(strata_trt_vec))
+        }
+    } else if (imb_fn == 'diff') {      # diff only for use with two groups
+        if (length(unique(strata_trt_vec) > 2)) {stop('Error you specified diff with >2 levels')}
+        if (length(unique(strata_trt_vec) == 1)) {return(length(strata_trt_vec))}
+        if (length(unique(strata_trt_vec)) == 2) {
+            temp_d <- abs(table(strata_trt_vec)[1] - table(strata_trt_vec[2]))
+        }
+    } else if (imb_fn == 'var') {       # variance of the counts in each trt
+        if (length(unique(strata_trt_vec)) == num_trts) {
+            temp_d <- var(table(strata_trt_vec))
+        } else if (length(unique(strata_trt_vec)) < num_trts) {
+            zero_trts <- num_trts - length(unique(strata_trt_vec))
+            temp_d <- var(c(table(strata_trt_vec), rep(0, zero_trts)))
+        }
+    } else {
+        stop("Bad imb_fn!")
+    }
+    
+    return(temp_d)
+}
+
+# Function to summarize imbalance across factors (possibly with weights)
+#' @param summary_fn Either "sum" or "avg", both function the same way
+#' @param d_vec Imbalances across all factors
+#' @param weights Vector to weight the factors differently
+#'
+#' @return Numeric summary of imbalance across all factors
+#' @export
+#' @examples
+#' summarize_imbalance(summary_fn="sum", d_vec=c(3,5,1,2,0))
+summarize_imbalance <- function(summary_fn, d_vec, weights=NULL) {
+    # no weights given, just equal for all
+    if (is.null(weights)) {weights <- rep(1, length(d_vec))}
+    
+    # functionally the same
+    if (summary_fn == 'sum') {
+        temp_G <- sum(d_vec * weights)
+    } else if (summary_fn == 'avg') {
+        temp_G <- mean(d_vec * weights)
+    }
+    
+    return(temp_G)
+}
+
+```
+
+```{r, make_ints, eval=TRUE, results='hide', cache=TRUE, warning=FALSE}
+# Function to assign intervals on [0,1] to trts
+# Always assign the biggest interval to start from 0
+# Unless all imbalances equal across treatments, then the intervals
+# are just all equal-sized in the order of the treat_vec.
+#' @param prob_fn Only "default" for now
+#' @param p1 Probability for "best" treatment
+#' @param imb_vec Vector of imbalances across all treatments
+#'
+#' @return list with lower=lower bounds of intervals and upper=upper bounds
+#' @export
+#' @examples
+#' make_ints(imb_vec=c(4,9))
+make_ints <- function(prob_fn="default", p1=0.8, imb_vec) {
+    # construct intervals
+    num_trts <- length(imb_vec)
+    lower_ints <- rep(NA, num_trts)
+    upper_ints <- rep(NA, num_trts)
+    
+    # if all imbalances the same, make all intervals the same size
+    if (sd(imb_vec) == 0) {
+        lower_ints <- seq(from=0, to=1, length.out=num_trts+1)[1:num_trts]
+        upper_ints <- seq(from=0, to=1, length.out=num_trts+1)[2:(num_trts+1)]
+        return(list(lower=lower_ints, upper=upper_ints))
+    }
+    
+    # p1 to the best, other intervals have size (1-p1)/(num_trts-1)
+    if (prob_fn == "default") {
+        # find the worst one, give it p1
+        best_idx <- which(imb_vec == min(imb_vec))
+        #best_idx <- best_idx[ceiling(runif(n=1, min=0, max=length(best_idx)))]
+        best_idx <- best_idx[1]         # if tie for best, best is the first listed, dangerous?
+        lower_ints[best_idx] <- 0
+        upper_ints[best_idx] <- p1
+        
+        # other indexes
+        other_idx <- (1:num_trts)[-best_idx]
+        other_lengths <- (1-p1) / length(other_idx)
+        for (trt_it in 1:length(other_idx)) {
+            lower_ints[other_idx[trt_it]] <- p1 + (trt_it-1) * other_lengths
+            upper_ints[other_idx[trt_it]] <- p1 + trt_it * other_lengths
+        }
+    }
+    
+    # return
+    return(list(lower=lower_ints, upper=upper_ints))
+}
+
+```
+
+```{r, assign_fn , eval=TRUE, results='hide', cache=TRUE, warning=FALSE}
+
+# Function to do the assignment, includes calc_imbalance and summarize_inbalance
+#' @param assigned_dat All subjects that have been assigned so far
+#' @param indiv_dat One row of data for current patient
+#' @param trt_vec Vector of treatment names
+#' @param factor_vec Vector of factor names
+#' @param imb_fn Either "range" or "diff" or "var"
+#' @param summary_fn Either "sum" or "avg"
+#' @param flip A 2*1 vector to match the client, first one used if no ties and second
+#' used if ties for best trt
+#'
+#' @return list with lower=lower bounds of intervals and upper=upper bounds and trt=
+#' assigned treatment
+#' @export
+assign_fn <- function(assigned_dat, indiv_dat, trt_vec, factor_vec, imb_fn, 
+                      summary_fn, flip) {
+  
+    # for each treatment, get the imbalance vector and then summary of
+    # imbalance if assigned to that treatment
+    imb_vec <- rep(NA, length(trt_vec))
+    factor_dvec <- rep(NA, length(factor_vec))
+    for (trt_it in 1:length(trt_vec)) {         # loop through treatments
+        temp_trt <- trt_vec[trt_it]
+        for (factor_it in 1:length(factor_vec)) {   # loop through factors
+            temp_factor <- factor_vec[factor_it]
+            temp_level <- as.numeric(indiv_dat[[temp_factor]])
+            temp_dat <- filter(assigned_dat, (!!as.name(temp_factor))==temp_level)
+            factor_dvec[factor_it] <- calc_imbalance(strata_trt_vec=temp_dat$trt,
+                                                     num_trts=length(trt_vec), imb_fn=imb_fn, 
+                                                     pot_trt=trt_vec[trt_it])
+        }
+        imb_vec[trt_it] <- summarize_imbalance(summary_fn=summary_fn, d_vec=factor_dvec)
+    }
+    
+    # get the assigned intervals
+    int_list <- make_ints(prob_fn="default", p1=0.8, imb_vec=imb_vec) 
+    
+    # assign
+    if (sd(imb_vec) == 0) {
+        assignment <- which(int_list$lower <= flip[2] & int_list$upper > flip[2])
+    } else {
+        assignment <- which(int_list$lower <= flip[1] & int_list$upper > flip[1])
+    }
+    
+    return(list(trt=trt_vec[assignment], int_list=int_list, imb_vec=imb_vec))
+}
+
+```
+
+```{r, run_one_trial , eval=TRUE, results='hide', cache=TRUE, warning=FALSE}
+
+# Function to perform one trial
+#' @param temp_covar All data with no treatment column
+#' @param trt_vec Vector of treatment names
+#' @param factor_vec Vector of factor names
+#' @param imb_fn Either "range" or "diff" or "var"
+#' @param summary_fn Either "sum" or "avg"
+#' @param flip_tab A num_subs*2 table of coin flip values, first one used if no ties and second
+#' used if ties for best trt
+#'
+#' @return data frame with all covariates and assigned treatments
+#' @export
+
+run_one_trial <- function(temp_covar, trt_vec, factor_vec, imb_fn,
+                          summary_fn, flip_tab) {
+    # holds treatment
+    dat_with_trt <- temp_covar %>% mutate(trt=NA)
+    # empty to start
+    assigned_dat <- dat_with_trt %>% filter(ID == -1)
+    
+    # make up flips?
+    if (is.null(flip_tab)) {
+        flip_tab <- matrix(data=runif(n=2*nrow(temp_covar)), ncol=2)
+    }
+
+    # recreate
+    for (sub_it in 1:nrow(temp_covar)) {
+        # next subject's data
+        indiv_dat <- temp_covar[sub_it, ]
+        # assign
+        assign_output <- assign_fn(assigned_dat=assigned_dat, indiv_dat=indiv_dat, 
+                        trt_vec=trt_vec, factor_vec=factor_vec, imb_fn=imb_fn, 
+                         summary_fn=summary_fn, flip=flip_tab[sub_it, ])
+        assign_output$int_list
+        assign_output$imb_vec
+        dat_with_trt$trt[sub_it] <- assign_output$trt
+        # update all known assignments
+        assigned_dat <- dat_with_trt[1:sub_it, ]
+    }
+    return(assigned_dat)
+}
+
+```
+
+```{r, check sim 1 range, eval=TRUE, cache=TRUE, warning=FALSE}
+########################################################################
+# range simulation
+# read in the coin flips and data
+setwd(data_dir)
+sim1_range_flips <- as.matrix(read.table('sim1_range_flips.txt'))
+sim1_range_dat <- read.csv('sim1_range_dat.csv') %>% set_colnames(c('Sim', 'ID', 'site', 'menopause',
+                                                         'ki67', 'nodal', 'trt')) %>%
+    mutate(menopause = ifelse(menopause == "post", 0, 1)) %>%
+    mutate(ki67 = ifelse(ki67 == "<20", 1, 0)) %>%
+    mutate(nodal = ifelse(nodal == "positive", 1, 0))
+
+# put in our framework
+trt_vec <- 1:2
+factor_vec <- c('menopause', 'ki67', 'nodal', 'site')
+imb_fn <- "range"
+summary_fn <- "sum"
+
+# recreate
+range_dat <- run_one_trial(temp_covar=sim1_range_dat, trt_vec=trt_vec, factor_vec=factor_vec, 
+                           imb_fn=imb_fn, summary_fn=summary_fn, flip_tab=sim1_range_flips)
+range_dat <- range_dat %>% mutate(trt = ifelse(trt == 2, "B", "A"))
+
+# print it
+print_range_trt <- data.frame(Orig=sim1_range_dat$trt,
+                              Checked=range_dat$trt)
+cat("Original treatment assignments and my treatment assignments for Simulation 1 using range:\n")
+cat("Number matched = ", sum(range_dat$trt == sim1_range_dat$trt), "\n")
+cat("For example, first 10...\n")
+print(print_range_trt[1:10, ])
+
+########################################################################
+# variance simultation
+setwd(data_dir)
+sim1_var_flips <- as.matrix(read.table('sim1_var_flips.txt'))
+sim1_var_dat <- read.csv('sim1_var_dat.csv') %>% set_colnames(c('Sim', 'ID', 'site', 'menopause',
+                                                         'ki67', 'nodal', 'trt')) %>%
+    mutate(menopause = ifelse(menopause == "post", 0, 1)) %>%
+    mutate(ki67 = ifelse(ki67 == "<20", 1, 0)) %>%
+    mutate(nodal = ifelse(nodal == "positive", 1, 0))
+
+var_dat <- run_one_trial(temp_covar=sim1_var_dat, trt_vec=trt_vec, factor_vec=factor_vec, 
+                           imb_fn="var", summary_fn=summary_fn, flip_tab=sim1_var_flips)
+var_dat <- var_dat %>% mutate(trt = ifelse(trt == 2, "B", "A"))
+
+# print it
+print_var_trt <- data.frame(Orig=sim1_var_dat$trt,
+                              Checked=var_dat$trt)
+cat("Original treatment assignments and my treatment assignments for Simulation 1 using variance:\n")
+cat("Number matched = ", sum(var_dat$trt == sim1_var_dat$trt), "\n")
+cat("For example, first 10...\n")
+print(print_var_trt[1:10, ])
+```
+
+```{r, sim_data, eval=TRUE, results='hide', cache=TRUE, warning=FALSE}
+# simulate data according to client
+sim_data <- function(n) {
+    # 1 is pre, 0 is post
+    menopause <- rbinom(n=n, size=1, prob=0.75)
+    # 1 is <20%, 0 is >=20%
+    ki67 <- rbinom(n=n, size=1, prob=0.5)
+    # 1 is positive, 0 is negative
+    nodal <- rbinom(n=n, size=1, prob=0.6)
+    # site
+    site <- rmultinom(n=n, size=1, prob=c(rep(0.02, 10), rep(0.04, 10), rep(0.08, 5)))
+    site <- apply(site, 2, find_site)
+    
+    dat_df <- data.frame(ID=1:n, menopause=menopause, ki67=ki67, nodal=nodal, site=site)
+    return(dat_df)
+}
+
+find_site <- function(x) {return(which(x == 1))}
+
+```
+
+```{r, run 10k simulation, eval=FALSE, results='hide', cache=TRUE, warning=FALSE}
+
+# Run the simulation
+num_sims <- 500
+num_subs <- 250
+trt_vec <- 1:2
+factor_vec <- c('menopause', 'ki67', 'nodal', 'site')
+imb_fn <- "range"
+summary_fn <- "sum"
+report_int <- 10
+
+for (sim_it in 433:num_sims) {
+    # make new data and run
+    temp_covar <- sim_data(n=num_subs)
+    trial_assignments <- run_one_trial(temp_covar=temp_covar, 
+                                       trt_vec=trt_vec, factor_vec=factor_vec, 
+                           imb_fn=imb_fn, summary_fn=summary_fn, flip_tab=NULL)
+    # record somewhere
+    if (sim_it == 1) {
+        all_res <- trial_assignments
+    } else {
+        temp_list <- list(all_res, trial_assignments)
+        all_res <- rbindlist(temp_list)
+    }
+    # checkpoint
+    if (sim_it%%report_int == 0) {cat(sim_it, "\n")}
+}
+
+setwd(data_dir)
+write.table(all_res, "sim500_n250.txt", append=F, quote=F, row.names=F, col.names=T, sep="\t")
+```
+
+
+```{r, Check 500, eval=TRUE, results='hide', cache=TRUE, warning=FALSE}
+setwd(data_dir)
+valid_res <- fread("sim500_n250.txt", header=T, data.table=F) %>%
+    mutate(trt = ifelse(trt == 1, "A", "B")) %>%
+    mutate(SimNo = rep(1:250, 500)) %>%
+    set_colnames(c('patient_id', 'menopause', 'ki67', 'nodal', 'site', 'trt', "SimNo"))
+g4_res <- read.csv("500sims.csv")
+colnames(g4_res)[7] <- "trt"
+
+plot_block_valid <- function(lower, upper, g4_res, valid_res, total_sims) {
+    # make results table
+    plot_dat <- data.frame(lower=lower, upper=upper, numA=NA,
+                       Method=rep(c('Validation', '4G'), length(upper)))
+    # filter blocks and find number of As
+    for (i in 1:nrow(plot_dat)) {
+        if (plot_dat$Method[i] == '4G') {
+            temp_dat <- filter(g4_res, patient_id>=plot_dat$lower[i] & 
+                               patient_id<=plot_dat$upper[i])
+        } else {
+            temp_dat <- filter(valid_res, patient_id>=plot_dat$lower[i] &
+                               patient_id<=plot_dat$upper[i])
+        }
+        plot_dat$numA[i] <- length(which(temp_dat$trt == "A")) / total_sims
+    }
+    
+    # bar plot
+    temp_plot <- ggplot(data=plot_dat, aes(x=lower, y=numA, fill=Method)) + 
+        geom_bar(stat="identity", position=position_dodge()) + 
+        theme(legend.position='bottom',
+            legend.box="horizontal",
+            legend.text=element_text(size=10),
+            plot.title=element_text(size=22, face='bold'),
+            axis.text=element_text(size=14),
+            axis.title=element_text(size=16, face="bold")) + 
+        xlab('Block Start') + 
+        ylab('Number A') +
+        ggtitle(paste0('Blocks of size ', upper[1]-lower[1]+1, ', number of A in each approach'))
+    
+    return(temp_plot)
+}
+
+# check blocks of 5
+lower <- seq(from=1, to=251, length.out=6)[1:5]
+plot5 <- plot_block_valid(lower=lower, upper=lower+4, g4_res=g4_res, 
+                           valid_res=valid_res, total_sims=500)
+plot5
+
+# check blocks of 10
+plot10 <- plot_block_valid(lower=lower, upper=lower+9, g4_res=g4_res, 
+                           valid_res=valid_res, total_sims=500)
+plot10
+
+# check blocks of 25
+plot25 <- plot_block_valid(lower=lower, upper=lower+24, g4_res=g4_res, 
+                           valid_res=valid_res, total_sims=500)
+plot25
+
+# check blocks of 50
+plot50 <- plot_block_valid(lower=lower, upper=lower+49, g4_res=g4_res, 
+                           valid_res=valid_res, total_sims=500)
+plot50
+```
+
+```{r, Check PS, eval=FALSE, results='hide', cache=TRUE, warning=FALSE}
+
+# make the data in pocock and simon
+factor1 <- c(rep(1,9), rep(2, 8), rep(1,10), rep(2,7), rep(1,9), rep(2,7))
+factor2 <- c(rep(1,8), rep(2,9), rep(1,6), rep(2,11), rep(1,7), rep(2,9))
+factor3 <- c(rep(1,8), rep(2,4), rep(3,5), rep(1,8), rep(2,5), rep(3,4), 
+             rep(1,8), rep(2,3), rep(3,5))
+trt <- c(rep(1,17), rep(2,17), rep(3,16))
+ps_dat <- data.frame(f1=factor1, f2=factor2, f3=factor3, trt=trt)
+
+# check the numbers
+table(ps_dat$trt[which(ps_dat$f1 == 1)])
+table(ps_dat$trt[which(ps_dat$f1 == 2)])
+table(ps_dat$trt[which(ps_dat$f2 == 1)])
+table(ps_dat$trt[which(ps_dat$f2 == 2)])
+table(ps_dat$trt[which(ps_dat$f3 == 1)])
+table(ps_dat$trt[which(ps_dat$f3 == 2)])
+table(ps_dat$trt[which(ps_dat$f3 == 3)])
+
+# get the intervals
+trt_vec <- c(1,2,3)
+factor_vec <- c('f1', 'f2', 'f3')
+imb_vec <- rep(NA, length(trt_vec))
+factor_dvec <- rep(NA, length(factor_vec))
+indiv_dat <- data.frame(f1=1, f2=2, f3=2)
+assigned_dat <- ps_dat
+for (trt_it in 1:length(trt_vec)) {
+    temp_trt <- trt_vec[trt_it]
+    for (factor_it in 1:length(factor_vec)) {
+        temp_factor <- factor_vec[factor_it]
+        temp_level <- as.numeric(indiv_dat[[temp_factor]])
+        temp_dat <- filter(assigned_dat, (!!as.name(temp_factor))==temp_level)
+        factor_dvec[factor_it] <- calc_imbalance(strata_trt_vec=temp_dat$trt,
+                                                imb_fn="range",
+                                               indiv_val=trt_vec[trt_it])
+    }
+    imb_vec[trt_it] <- summarize_imbalance(summary_fn="sum", weights=c(2,1,1), d_vec=factor_dvec)
+}
+# should be 6,10,5
+imb_vec
+    
+# get the assigned intervals
+int_list <- make_ints(prob_fn="default", p1=2/3, imb_vec=imb_vec)
+# should be 1/6, 1/6, 2/3
+int_list
+
+```
+
