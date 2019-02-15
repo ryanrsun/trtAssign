@@ -1,4 +1,5 @@
-#' Function to do the assignment, includes calc_imbalance and summarize_inbalance
+#' Function to do the assignment, relies on calc_imbalance() and summarize_inbalance()
+
 #' @param assigned_dat All subjects that have been assigned so far
 #' @param indiv_dat One row of data for current patient
 #' @param trt_vec Vector of treatment names

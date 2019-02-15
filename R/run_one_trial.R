@@ -30,8 +30,6 @@ run_one_trial <- function(temp_covar, trt_vec, factor_vec, imb_fn,
         assign_output <- assign_fn(assigned_dat=assigned_dat, indiv_dat=indiv_dat,
                                    trt_vec=trt_vec, factor_vec=factor_vec, imb_fn=imb_fn,
                                    summary_fn=summary_fn, flip=flip_tab[sub_it, ])
-        assign_output$int_list
-        assign_output$imb_vec
         dat_with_trt$trt[sub_it] <- assign_output$trt
         # update all known assignments
         assigned_dat <- dat_with_trt[1:sub_it, ]

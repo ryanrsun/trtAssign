@@ -1,4 +1,6 @@
 #' Function to calculate the measure of (im)balance for one factor
+#' AFTER adding a potential treatment (not current imbalance).
+#'
 #' @param strata_trt_vec Vector containing the treatment assignment of each patient
 #' in this particular strata
 #' @param num_trts Total number of treatments
@@ -17,15 +19,17 @@ calc_imbalance <- function(strata_trt_vec, num_trts, imb_fn, pot_trt) {
         if (imb_fn == "var") {return(0)}
     }
 
-    # append the potentital treatment value
+    # append the potential treatment value
     strata_trt_vec <- c(strata_trt_vec, pot_trt)
 
     # range
     if (imb_fn == 'range') {
         # sometimes haven't seen all the treatments yet
         if (length(unique(strata_trt_vec)) != num_trts) {
+            # range = max - 0
             temp_d <- max(table(strata_trt_vec))
         } else {
+            # range = max - min
             temp_d <- max(table(strata_trt_vec)) - min(table(strata_trt_vec))
         }
     } else if (imb_fn == 'diff') {      # diff only for use with two groups
@@ -38,6 +42,7 @@ calc_imbalance <- function(strata_trt_vec, num_trts, imb_fn, pot_trt) {
         if (length(unique(strata_trt_vec)) == num_trts) {
             temp_d <- var(table(strata_trt_vec))
         } else if (length(unique(strata_trt_vec)) < num_trts) {
+            # need to append 0s if not all treatments seen
             zero_trts <- num_trts - length(unique(strata_trt_vec))
             temp_d <- var(c(table(strata_trt_vec), rep(0, zero_trts)))
         }

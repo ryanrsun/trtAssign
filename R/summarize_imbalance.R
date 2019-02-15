@@ -1,7 +1,9 @@
-
 # Function to summarize imbalance across factors (possibly with weights)
-#' @param summary_fn Either "sum" or "avg", both function the same way
-#' @param d_vec Imbalances across all factors
+# For example, just add up all the imbalances to get a total imbalance.
+
+#' @param summary_fn Either "sum" or "avg", essentially identical measures
+#' but just scaled differently
+#' @param d_vec Holds imbalance measure of each factor
 #' @param weights Vector to weight the factors differently
 #'
 #' @return Numeric summary of imbalance across all factors
